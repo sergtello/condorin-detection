@@ -30,6 +30,7 @@ from condorin.core.qc import run_qc
 from condorin.io import storage
 from condorin.job.config import JobSettings
 from condorin.job.report import DeliveryError, Reporter
+from condorin.job.verify import JevVerifier, build_verifier
 
 log = logging.getLogger(__name__)
 
@@ -106,12 +107,18 @@ def crop_png(image_bgr: np.ndarray, xyxy: tuple[float, ...], pad: int, min_side:
 
 class Runner:
     def __init__(
-        self, settings: JobSettings, card: ModelCard, detector: Detector, reporter: Reporter
+        self,
+        settings: JobSettings,
+        card: ModelCard,
+        detector: Detector,
+        reporter: Reporter,
+        verifier: JevVerifier | None = None,
     ) -> None:
         self.settings = settings
         self.card = card
         self.detector = detector
         self.reporter = reporter
+        self.verifier = verifier
 
     @property
     def min_confidence(self) -> float:
@@ -199,6 +206,10 @@ class Runner:
             bbox, lat, lon = box_to_webhook(d.box, qc.width, qc.height, meta["bounds"])
             png = crop_png(qc.image_bgr, d.box, self.settings.crop_padding_px,
                            self.settings.crop_min_side_px)  # fmt: skip
+            if self.verifier and self.verifier.rejects(png):
+                log.info("jev says not a dredge, box dropped",
+                         extra={"image_uri": uri, "fields": {"confidence": round(float(d.conf), 4)}})  # fmt: skip
+                continue
             crop_obj = self.crop_object(obj, generation, i)
             crop_gen = storage.write_once(storage.join(root, crop_obj), png, "image/png")
             detections.append({
@@ -219,7 +230,9 @@ class Runner:
             "model": {"name": self.card.name, "version": self.card.version},
             "detections": detections,
         }
-        return self.reporter.post(payload, idempotency_key(bucket, obj, generation)), len(found)
+        return self.reporter.post(payload, idempotency_key(bucket, obj, generation)), len(
+            detections
+        )
 
 
 def warn_runtime_drift(card: ModelCard) -> list[str]:
@@ -282,9 +295,12 @@ def main() -> int:
     log.info("starting", extra={"model_version": card.version, "fields": {
         "prefix": prefix, "bucket": settings.input_bucket, "images_total": len(objects),
         "images_this_task": len(mine), "task_index": index, "task_count": count,
-        "device": detector.device, "webhook_mode": settings.webhook_mode}})  # fmt: skip
+        "device": detector.device, "webhook_mode": settings.webhook_mode,
+        "jev": bool(settings.jev_api_key)}})  # fmt: skip
 
-    summary = Runner(settings, card, detector, Reporter(settings)).run(mine)
+    summary = Runner(settings, card, detector, Reporter(settings), build_verifier(settings)).run(
+        mine
+    )
     log.info(
         f"done: {summary.processed} reported ({summary.with_findings} with findings), "
         f"{summary.failed} failed, of {summary.listed}",

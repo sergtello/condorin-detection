@@ -36,6 +36,14 @@ class JobSettings(BaseSettings):
     crop_padding_px: int = 32
     crop_min_side_px: int = 128
 
+    # --- false positive check (TypeSafe Jev via OpenRouter, see job/verify.py); off without a key ---
+    jev_api_key: SecretStr | None = None
+    jev_url: str = "https://openrouter.ai/api/alpha/decisions"
+    jev_model: str = "typesafe/jev-1.14"
+    # Drop a box only when Jev is this sure it is not a dredge.
+    jev_reject_min: float = Field(0.8, ge=0.0, le=1.0)
+    jev_timeout_s: float = 10.0
+
     # --- image metadata ---
     default_satellite: str = "SkyFi"  # used when the object has no `satellite` custom metadata
 
